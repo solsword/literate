@@ -27,12 +27,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import os
 import random
+import pickle
 
 import numpy as np
+import tensorflow as tf
 
 import keras
 from keras.models import Sequential
 from keras.layers import Dense, Activation, LSTM
+from keras.metrics import categorical_crossentropy
 from keras.optimizers import RMSprop
 #from keras.layers import Dropout
 #from keras.layers import LSTM
@@ -48,6 +51,7 @@ DEFAULT_PARAMS = {
   "epochs": 10,
   "batch_size": 128,
   "models_dir": "models",
+  "objects_dir": "objects",
 }
 
 STX = '\u0002'
@@ -140,7 +144,7 @@ def build_model(params, cmap):
   model.add(Activation('softmax'))
 
   optimizer = RMSprop(lr=0.01)
-  model.compile(loss='categorical_crossentropy', optimizer=optimizer)
+  model.compile(loss=categorical_crossentropy, optimizer=optimizer)
 
   return model
 
@@ -182,6 +186,47 @@ def generate(params, model, cmap, seed='', n=80, temperature=1.0):
 
   return result
 
+def cat_crossent(true, pred):
+  """
+  Returns the categorical crossentropy between a true distribution and a
+  predicted distribution.
+  """
+  return -np.dot(true, np.log(pred))
+
+def avg_cat_crossent(batch_true, batch_predicted):
+  """
+  Returns the average categorical crossentropy between paired members of the
+  given batches.
+  """
+  result = 0
+  for i in range(batch_true.shape[0]):
+    result += cat_crossent(batch_true[i], batch_predicted[i])
+  return result/batch_true.shape[0]
+
+def rate_novelty(params, model, cmap, context, fragment):
+  """
+  Takes a context of at least window_size (raw text) as well as a fragment
+  (also text) and using the context to spin up the network, predicts each
+  character of the fragment in sequence, averaging the categorical crossentropy
+  error-per-character to compute a novelty value for the fragment.
+  """
+  vec = vectorize(params, context, cmap, pad=False)
+  rmap = {v: k for (k, v) in cmap.items()}
+  result = 0
+  ivs = []
+  trues = []
+  for i in range(len(fragment)):
+    iv = vec[-params["window_size"]:]
+    ivs.append(iv)
+    nv = vectorize(params, fragment[i], cmap, pad=False)
+    trues.append(nv[0])
+    vec = np.append(vec, nv, axis=0)
+
+  preds = np.array(model.predict(np.array(ivs), verbose=0), dtype=np.float64)
+  trues = np.array(trues, dtype=np.float64)
+
+  return avg_cat_crossent(trues, preds)
+
 def save_model(params, model, model_name):
   """
   Saves the given model to disk for retrieval using load_model.
@@ -200,84 +245,179 @@ def load_model(params, model_name):
     return None
 
 
+def save_object(params, obj, name):
+  """
+  Uses pickle to save the given object to a file.
+  """
+  fn = os.path.join(params["objects_dir"], name) + ".pkl"
+  with open(fn, 'wb') as fout:
+    pickle.dump(obj, fout)
+
+def load_object(params, name):
+  """
+  Uses pickle to load the given object from a file. If the file doesn't exist,
+  returns None.
+  """
+  fn = os.path.join(params["objects_dir"], name) + ".pkl"
+  if os.path.exists(fn):
+    with open(fn, 'rb') as fin:
+      return pickle.load(fin)
+  else:
+    return None
+
+
 @utils.default_params(DEFAULT_PARAMS)
 def main(**params):
   """
   Main program. Loads data, vectorizes it, and then trains a network to
   reproduce it.
   """
+  try:
+    os.mkdir(params["models_dir"])
+  except FileExistsError:
+    pass
+
+  try:
+    os.mkdir(params["objects_dir"])
+  except FileExistsError:
+    pass
+
   texts = load_data(params)
-  print("Vectorizing data...")
+
+  print("Creating charmap...")
   cm = charmap(params, ''.join(texts))
-  vectors = []
-  for t in texts:
-    vectors.append(vectorize(params, t, cm, pad=True))
 
-  print(
-    "Total characters: {}\nVocabulary: {}\n{}".format(
-      sum(len(t) for t in texts),
-      len(cm),
-      ''.join(sorted([k for k in cm])).replace('\n', r'\n').replace('\r', r'\r')
-    )
-  )
+  cached = load_model(params, "final")
+  if cached:
+    print("Loading trained model...")
+    model = cached
+    print("...done loading model.")
+  else:
+    print("Compiling model...")
+    model = load_model(params, "fresh") or build_model(params, cm)
+    save_model(params, model, "fresh")
 
-  print("Distilling training sequences...")
-  train = []
-  target = []
-  for tv in vectors:
-    for i in range(
-      params["window_size"] // 2,
-      len(tv) - params["window_size"],
-      params["training_window_step"]
-    ):
-      train.append(tv[i:i + params["window_size"]])
-      target.append(tv[i+params["window_size"]])
+    print("Vectorizing data...")
+    vectors = []
+    for t in texts:
+      vectors.append(vectorize(params, t, cm, pad=True))
 
-  train = np.array(train, dtype=np.bool)
-  target = np.array(target, dtype=np.bool)
-
-  print("Compiling model...")
-  model = load_model(params, "fresh") or build_model(params, cm)
-  save_model(params, model, "fresh")
-
-  print("Training model...")
-  for epoch in range(1, params["epochs"]+1):
-    print()
-    print('-'*80)
-    print("Epoch {}".format(epoch))
-    cached = load_model(params, "epoch-{}".format(epoch))
-    if cached:
-      model = cached
-    else:
-      model.fit(train, target, batch_size=params["batch_size"], epochs=1)
-      save_model(params, model, "epoch-{}".format(epoch))
-
-    start_from = random.choice(vectors)
-    start_index = random.randint(
-      params["window_size"]//2,
-      len(start_from) - params["window_size"]*2
-    )
-
-    for diversity in [0.2, 0.5, 1.0, 1.2]:
-      print()
-      print("--- diversity: {}".format(diversity))
-
-      seed = start_from[start_index:start_index + params["window_size"]]
-      generated = de_vectorize(params, seed, cm)
-      print("--- generating from: '{}'".format(generated))
-      print(generated, end="")
-      gen = generate(
-        params,
-        model,
-        cm,
-        seed=generated,
-        n=80*4,
-        temperature=diversity
+    print(
+      "Total characters: {}\nVocabulary: {}\n{}".format(
+        sum(len(t) for t in texts),
+        len(cm),
+        ''.join(
+          sorted([k for k in cm])
+        ).replace('\n', r'\n').replace('\r', r'\r')
       )
-      print(gen)
-      print("---")
+    )
 
-  save_model(params, model, "final")
+    print("Distilling training sequences...")
+    train = []
+    target = []
+    for tv in vectors:
+      for i in range(
+        params["window_size"] // 2,
+        len(tv) - params["window_size"],
+        params["training_window_step"]
+      ):
+        train.append(tv[i:i + params["window_size"]])
+        target.append(tv[i+params["window_size"]])
+
+    train = np.array(train, dtype=np.bool)
+    target = np.array(target, dtype=np.bool)
+
+    print("Training model...")
+    for epoch in range(1, params["epochs"]+1):
+      print()
+      print('-'*80)
+      print("Epoch {}".format(epoch))
+      cached = load_model(params, "epoch-{}".format(epoch))
+      if cached:
+        model = cached
+      else:
+        model.fit(train, target, batch_size=params["batch_size"], epochs=1)
+        save_model(params, model, "epoch-{}".format(epoch))
+
+      start_from = random.choice(vectors)
+      start_index = random.randint(
+        params["window_size"]//2,
+        len(start_from) - params["window_size"]*2
+      )
+
+      # TODO: This again
+      #for diversity in [0.2, 0.5, 1.0, 1.2]:
+      #  print()
+      #  print("--- diversity: {}".format(diversity))
+
+      #  seed = start_from[start_index:start_index + params["window_size"]]
+      #  generated = de_vectorize(params, seed, cm)
+      #  print("--- generating from: '{}'".format(generated))
+      #  print(generated, end="")
+      #  gen = generate(
+      #    params,
+      #    model,
+      #    cm,
+      #    seed=generated,
+      #    n=80*4,
+      #    temperature=diversity
+      #  )
+      #  print(gen)
+      #  print("---")
+
+    print("...done with training.")
+    save_model(params, model, "final")
+
+  print("Separating sentences...")
+  sentences = []
+  for t in texts:
+    si = 0
+    ei = 0
+    done = False
+    while not done:
+      try:
+        ei = t.index('.', si+1)
+      except ValueError:
+        ei = len(t)
+        done = True
+      if si == 0:
+        sentences.append((STX*params["window_size"], t[si:ei]))
+      elif si < params["window_size"]:
+        pre = t[:si]
+        pre = STX * (params["window_size"] - len(pre)) + pre
+        sentences.append((pre, t[si:ei]))
+      else:
+        sentences.append((t[si-params["window_size"]:si], t[si:ei]))
+      si = ei
+
+  cached = load_object(params, "extremes")
+  if cached:
+    boring, interesting = cached
+  else:
+    print("Rating {} sentences...".format(len(sentences)))
+    cached = load_object(params, "rated")
+    if cached:
+      rated = cached
+    else:
+      rated = []
+      for i, (ctx, st) in enumerate(sentences):
+        utils.prbar(i/len(sentences), interval=5)
+        nv = np.mean(rate_novelty(params, model, cm, ctx, st))
+        rated.append((nv, ctx, st))
+      save_object(params, rated, "rated")
+
+    rated = sorted(rated, key=lambda abc: (abc[0], abc[1], abc[2]))
+    boring = rated[:5]
+    interesting = rated[-5:]
+    save_object(params, (boring, interesting), "extremes")
+
+  print("Least-novel:")
+  for r, ctx, st in boring:
+    print("{:.3g}\n---\n{}\n---\n{}\n---".format(r, ctx, st))
+
+  print("Most-novel:")
+  for r, ctx, st in interesting:
+    print("{:.3g}\n---\n{}\n---\n{}\n---".format(r, ctx, st))
 
 if __name__ == "__main__":
   main()
