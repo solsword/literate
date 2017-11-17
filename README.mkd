@@ -1,0 +1,28 @@
+# Literate
+
+Character-level RNN using LSTM nodes for text processing.
+
+Currently trains a model on .txt files from the data/ folder and outputs
+example generated text at each epoch during training.
+
+## Goals
+
+- Train character-level models in a language-agnostic way.
+    * Try 32-bit encoding input instead of 1-hot to see if the network can
+      handle it (perhaps with more complex structure?).
+    * Try to use with some Chinese/Japanese text.
+- Increase generation robustness.
+    * Try multi-character prediction during training to see if this helps?
+    * Increase network complexity and add multiple layers.
+    * Implement network-guided MCMC generation?
+- Rank outputs by novelty.
+    * Sentence-based units in English... Is there some way to
+      automatically/dynamically set fragment boundaries?
+
+## Included Data
+
+Some text files in the data/ folder were downloaded from The Gutenberg
+Project, and are free of copyright restrictions. Their headers and footers were
+stripped to ease data intake but the important work of the Gutenberg Project
+should be duly acknowledged.
+
