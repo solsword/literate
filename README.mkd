@@ -2,6 +2,8 @@
 
 Character-level RNN using LSTM nodes for text processing.
 
+Also has a CNN version.
+
 Currently trains a model on .txt files from the data/ folder and outputs
 example generated text at each epoch during training.
 
