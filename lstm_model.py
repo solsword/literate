@@ -35,7 +35,6 @@ import tensorflow as tf
 import keras
 from keras.models import Sequential
 from keras.layers import Dense, Activation, LSTM
-from keras.metrics import categorical_crossentropy
 from keras.optimizers import RMSprop
 #from keras.layers import Dropout
 #from keras.layers import LSTM
@@ -43,6 +42,8 @@ from keras.optimizers import RMSprop
 #from keras.utils import np_utils
 
 import utils
+
+MAX_UNICHR = 0x10ffff
 
 DEFAULT_PARAMS = {
   "input_directory": "data",
@@ -93,7 +94,7 @@ def charmap(params, text):
   chars = sorted(list(set(text + STX + ETX + SUB)))
   return { c : i for i, c in enumerate(chars) }
 
-def vectorize(params, text, cmap, pad=False):
+def vectorize_onehot(params, text, cmap, pad=False):
   """
   Turns some text into a one-hot encoded version, returning the encoded text as
   a two-dimensional numpy array where each row encodes a character from the
@@ -118,7 +119,7 @@ def vectorize(params, text, cmap, pad=False):
     dtype=np.bool
   )
 
-def de_vectorize(params, vec, cmap):
+def de_vectorize_onehot(params, vec, cmap):
   """
   Converts a 1-hot encoding as returned by vectorize back into characters using
   the given character map. Uses argmax to find most-active member of each row
@@ -133,18 +134,113 @@ def de_vectorize(params, vec, cmap):
 
   return result
 
-def build_model(params, cmap):
+#def univec(c):
+#  """
+#  Translates a character into a binary vector using UTF-32 bits.
+#  """
+#  result = []
+#  o = ord(c)
+#  for sh in range(32):
+#    result.append(((1 << sh) & o)>>sh)
+#  return result
+#
+#def unichr(v):
+#  """
+#  Translates a binary vector into a character.
+#  """
+#  rord = 0
+#  for i, b in enumerate(v):
+#    rord |= (b > 0.5) << i
+#
+#  if rord > MAX_UNICHR:
+#    return SUB
+#
+#  return chr(rord)
+
+def onehot(i, n):
+  return [0] * i + [1] + [0] * (n - i - 1)
+
+def univec(c):
   """
-  Builds the Keras model. Needs the character map to know what size inputs to
-  take.
+  Translates a character into a binary vector starting from the Unicode
+  codepoint and concatenating the one-hot encodings of each base-32 digit.
   """
+  result = []
+  o = ord(c)
+  for i in range(5): # 32**5 > 0x10ffff
+    result.extend(onehot(o % 32, 32))
+    o //= 32
+  return result
+
+def unichr(v):
+  """
+  Translates a binary vector into a character. Uses argmax on each 32-entry
+  chunk, so works even if the vector isn't purely binary.
+  """
+  rord = 0
+  denom = 1
+  for i in range(5):
+    rord += denom * np.argmax(v[:32])
+    v = v[32:]
+    denom *= 32
+
+  if rord > MAX_UNICHR:
+    return SUB
+  else:
+    return chr(rord)
+
+
+def vectorize(params, text, pad=False):
+  """
+  Turns some text into a bit-string encoded version, returning the encoded text
+  as a two-dimensional numpy array where each row encodes a character from the
+  text and each column corresponds to a character. UTF-32 codepoint bits are
+  used as the encoding.
+
+  If pad is given as True, encoded STX and ETX will be used to pad the string
+  by window_size on either side.
+  """
+  padding = params["window_size"] if pad else 0
+  
+  return np.array(
+    [univec(STX)] * padding + [
+      univec(c) for c in text
+    ] + [univec(ETX)] * padding,
+    dtype=np.bool
+  )
+
+def de_vectorize(params, vec):
+  """
+  Converts a bit-array encoding as returned by vectorize back into characters
+  using the given character map. Uses a threshold of 0.5 in case the input
+  isn't really binary.
+  """
+  result = ''
+  for row in vec:
+    result += unichr(row)
+
+  return result
+
+def build_model(params):
+  """
+  Builds the Keras model.
+  """
+  encsize = len(univec(' '))
+  histsize = params["window_size"] * encsize
   model = Sequential()
-  model.add(LSTM(128, input_shape=(params["window_size"], len(cmap))))
-  model.add(Dense(len(cmap)))
-  model.add(Activation('softmax'))
+  model.add(LSTM(128, input_shape=(params["window_size"], encsize)))
+  model.add(Activation("relu"))
+  model.add(Dense(encsize))
+  model.add(Activation("relu"))
+  model.add(Dense(encsize))
+  #model.add(Activation("relu"))
+  model.add(Activation("softmax"))
+
+  # TODO: Model specifics
 
   optimizer = RMSprop(lr=0.01)
-  model.compile(loss=categorical_crossentropy, optimizer=optimizer)
+  model.compile(loss="categorical_crossentropy", optimizer=optimizer)
+  #model.compile(loss="mean_squared_error", optimizer=optimizer)
 
   return model
 
@@ -161,7 +257,7 @@ def sample(preds, temperature=1.0):
   return np.argmax(probas)
 
 
-def generate(params, model, cmap, seed='', n=80, temperature=1.0):
+def generate(params, model, seed='', n=80):
   """
   Generates some text using the given model starting from the given seed. N
   specifies the number of additional characters to generate. If no seed is
@@ -173,15 +269,14 @@ def generate(params, model, cmap, seed='', n=80, temperature=1.0):
   """
   if len(seed) < params["window_size"]:
     seed = STX * (params["window_size"] - len(seed)) + seed
-  rmap = {v: k for (k, v) in cmap.items()}
   result = ''
-  vec = vectorize(params, seed, cmap, pad=False)
+  vec = vectorize(params, seed, pad=False)
   for i in range(n):
     iv = vec[-params["window_size"]:]
-    preds = model.predict(np.reshape(iv, (1,) + iv.shape), verbose=0)[0]
-    nc = rmap.get(sample(preds, temperature), SUB)
+    pred = model.predict(np.reshape(iv, (1,) + iv.shape), verbose=0)[0]
+    nc = unichr(pred)
     result += nc
-    nv = vectorize(params, nc, cmap, pad=False)
+    nv = vectorize(params, nc, pad=False)
     vec = np.append(vec, nv, axis=0)
 
   return result
@@ -191,7 +286,8 @@ def cat_crossent(true, pred):
   Returns the categorical crossentropy between a true distribution and a
   predicted distribution.
   """
-  return -np.dot(true, np.log(pred))
+  # Note the corrective factor here to avoid division by zero in log:
+  return -np.dot(true, np.log(pred + 1e-12))
 
 def avg_cat_crossent(batch_true, batch_predicted):
   """
@@ -203,6 +299,15 @@ def avg_cat_crossent(batch_true, batch_predicted):
     result += cat_crossent(batch_true[i], batch_predicted[i])
   return result/batch_true.shape[0]
 
+def avg_rmse(batch_true, batch_predicted):
+  """
+  Returns the average RMSE between paired members of the given batches.
+  """
+  result = 0
+  for i in range(batch_true.shape[0]):
+    result += sqrt(np.mean(np.power(batch_true[i] - batch_predicted[i], 2)))
+  return result / batch_true.shape[0]
+
 def rate_novelty(params, model, cmap, context, fragment):
   """
   Takes a context of at least window_size (raw text) as well as a fragment
@@ -210,7 +315,7 @@ def rate_novelty(params, model, cmap, context, fragment):
   character of the fragment in sequence, averaging the categorical crossentropy
   error-per-character to compute a novelty value for the fragment.
   """
-  vec = vectorize(params, context, cmap, pad=False)
+  vec = vectorize(params, context, pad=False)
   rmap = {v: k for (k, v) in cmap.items()}
   result = 0
   ivs = []
@@ -218,14 +323,16 @@ def rate_novelty(params, model, cmap, context, fragment):
   for i in range(len(fragment)):
     iv = vec[-params["window_size"]:]
     ivs.append(iv)
-    nv = vectorize(params, fragment[i], cmap, pad=False)
+    nv = vectorize(params, fragment[i], pad=False)
     trues.append(nv[0])
     vec = np.append(vec, nv, axis=0)
 
   preds = np.array(model.predict(np.array(ivs), verbose=0), dtype=np.float64)
   trues = np.array(trues, dtype=np.float64)
 
+  # TODO: Which of these?
   return avg_cat_crossent(trues, preds)
+  #return avg_rmse(trues, preds)
 
 def save_model(params, model, model_name):
   """
@@ -294,13 +401,13 @@ def main(**params):
     print("...done loading model.")
   else:
     print("Compiling model...")
-    model = load_model(params, "fresh") or build_model(params, cm)
+    model = load_model(params, "fresh") or build_model(params)
     save_model(params, model, "fresh")
 
     print("Vectorizing data...")
     vectors = []
     for t in texts:
-      vectors.append(vectorize(params, t, cm, pad=True))
+      vectors.append(vectorize(params, t, pad=True))
 
     print(
       "Total characters: {}\nVocabulary: {}\n{}".format(
@@ -345,25 +452,20 @@ def main(**params):
         len(start_from) - params["window_size"]*2
       )
 
-      # TODO: This again
-      #for diversity in [0.2, 0.5, 1.0, 1.2]:
-      #  print()
-      #  print("--- diversity: {}".format(diversity))
-
-      #  seed = start_from[start_index:start_index + params["window_size"]]
-      #  generated = de_vectorize(params, seed, cm)
-      #  print("--- generating from: '{}'".format(generated))
-      #  print(generated, end="")
-      #  gen = generate(
-      #    params,
-      #    model,
-      #    cm,
-      #    seed=generated,
-      #    n=80*4,
-      #    temperature=diversity
-      #  )
-      #  print(gen)
-      #  print("---")
+      # TODO: Not this?
+      seed = start_from[start_index:start_index + params["window_size"]]
+      generated = de_vectorize(params, seed)
+      print("--- generating...".format(generated))
+      pre = generated;
+      gen = generate(
+        params,
+        model,
+        seed=generated,
+        n=80*4
+      )
+      gen = utils.reflow(pre + "|" + gen)
+      print(gen)
+      print("---")
 
     print("...done with training.")
     save_model(params, model, "final")
@@ -390,34 +492,41 @@ def main(**params):
         sentences.append((t[si-params["window_size"]:si], t[si:ei]))
       si = ei
 
-  cached = load_object(params, "extremes")
+  print("Rating {} sentences...".format(len(sentences)))
+  cached = load_object(params, "rated")
   if cached:
-    boring, interesting = cached
+    print("  ...loaded saved ratings.")
+    rated = cached
   else:
-    print("Rating {} sentences...".format(len(sentences)))
-    cached = load_object(params, "rated")
-    if cached:
-      rated = cached
-    else:
-      rated = []
-      for i, (ctx, st) in enumerate(sentences):
-        utils.prbar(i/len(sentences), interval=5)
-        nv = np.mean(rate_novelty(params, model, cm, ctx, st))
-        rated.append((nv, ctx, st))
-      save_object(params, rated, "rated")
+    rated = []
+    for i, (ctx, st) in enumerate(sentences):
+      if len(st) == 0:
+        continue
+      utils.prbar(i/len(sentences), interval=5)
+      nv = np.mean(rate_novelty(params, model, cm, ctx, st))
+      rated.append((nv, ctx, st))
+    save_object(params, rated, "rated")
+    print("  ...done rating sentences.")
 
-    rated = sorted(rated, key=lambda abc: (abc[0], abc[1], abc[2]))
-    boring = rated[:5]
-    interesting = rated[-5:]
-    save_object(params, (boring, interesting), "extremes")
+  rated = sorted(rated, key=lambda abc: (abc[0], abc[1], abc[2]))
+  boring = rated[:5]
+  interesting = rated[-5:]
 
+  print("---")
   print("Least-novel:")
   for r, ctx, st in boring:
-    print("{:.3g}\n---\n{}\n---\n{}\n---".format(r, ctx, st))
+    st = utils.reflow(st)
+    if st.startswith(". "):
+      st = st[2:] + "."
+    print("{:.3g}: {}".format(r, st))
 
+  print("---")
   print("Most-novel:")
   for r, ctx, st in interesting:
-    print("{:.3g}\n---\n{}\n---\n{}\n---".format(r, ctx, st))
+    st = utils.reflow(st)
+    if st.startswith(". "):
+      st = st[2:] + "."
+    print("{:.3g}: '{}'".format(r, st))
 
 if __name__ == "__main__":
   main()
