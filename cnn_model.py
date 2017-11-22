@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-lstm_model.py
+cnn_model.py
 
-Trains an LSTM model and uses it to rate novelty of sentences.
+Trains a CNN model and uses it to rate novelty of sentences.
 
 Based on:
 
@@ -34,12 +34,9 @@ import tensorflow as tf
 
 import keras
 from keras.models import Sequential
-from keras.layers import Dense, Activation, LSTM
-from keras.optimizers import RMSprop
-#from keras.layers import Dropout
-#from keras.layers import LSTM
-#from keras.callbacks import ModelCheckpoint
-#from keras.utils import np_utils
+from keras.layers import Dense, Activation, Flatten, Reshape
+from keras.layers import Conv1D, MaxPooling1D, UpSampling1D
+from keras.regularizers import l1
 
 import utils
 
@@ -49,6 +46,11 @@ DEFAULT_PARAMS = {
   "input_directory": "data",
   "window_size": 64,
   "training_window_step": 1,
+  "conv_sizes": [64, 32],
+  "dense_sizes": [512, 256, 128],
+  "regularization": 1e-5,
+  "encoded_layer_name": "final_encoder",
+  "decoded_layer_name": "final_decoder",
   "epochs": 10,
   "batch_size": 128,
   "models_dir": "models",
@@ -80,82 +82,6 @@ def load_data(params):
 
   print("  ...done loading data.")
   return texts
-
-
-def charmap(params, text):
-  """
-  Takes some text and creates a character -> integer mapping for it, returning
-  a dictionary.
-
-  The STX (\\u0002 -> '\u0002'), ETX (\\u0003 -> '\u0003'), and SUB (\\u001a ->
-  '\u001a') characters are added to the map to be used as front padding, end
-  padding, and unknown-character-replacement.
-  """
-  chars = sorted(list(set(text + STX + ETX + SUB)))
-  return { c : i for i, c in enumerate(chars) }
-
-def vectorize_onehot(params, text, cmap, pad=False):
-  """
-  Turns some text into a one-hot encoded version, returning the encoded text as
-  a two-dimensional numpy array where each row encodes a character from the
-  text (and therefore sums to 1) and each column corresponds to a character.
-  Uses the given character mapping (see the charmap function).
-
-  If pad is given as True, encoded STX and ETX will be used to pad the string
-  by window_size on either side.
-  """
-  padding = params["window_size"] if pad else 0
-  fpad = cmap.get(STX, cmap.get(SUB, 0))
-  epad = cmap.get(ETX, cmap.get(SUB, 0))
-
-  def onehot(i):
-    return [0] * i + [1] + [0] * (len(cmap) - i - 1)
-  
-  return np.array(
-    [onehot(fpad)] * padding + [
-      onehot(cmap.get(c, cmap.get(SUB, 0)))
-        for c in text
-    ] + [onehot(epad)] * padding,
-    dtype=np.bool
-  )
-
-def de_vectorize_onehot(params, vec, cmap):
-  """
-  Converts a 1-hot encoding as returned by vectorize back into characters using
-  the given character map. Uses argmax to find most-active member of each row
-  if the input isn't a true 1-hot encoding. If the given character map is
-  deficient, the SUB character will be used for missing values.
-  """
-  result = ''
-  rmap = {v: k for (k, v) in cmap.items()}
-  for row in vec:
-    idx = np.argmax(row)
-    result += rmap.get(idx, SUB)
-
-  return result
-
-#def univec(c):
-#  """
-#  Translates a character into a binary vector using UTF-32 bits.
-#  """
-#  result = []
-#  o = ord(c)
-#  for sh in range(32):
-#    result.append(((1 << sh) & o)>>sh)
-#  return result
-#
-#def unichr(v):
-#  """
-#  Translates a binary vector into a character.
-#  """
-#  rord = 0
-#  for i, b in enumerate(v):
-#    rord |= (b > 0.5) << i
-#
-#  if rord > MAX_UNICHR:
-#    return SUB
-#
-#  return chr(rord)
 
 def onehot(i, n):
   return [0] * i + [1] + [0] * (n - i - 1)
@@ -226,36 +152,59 @@ def build_model(params):
   Builds the Keras model.
   """
   encsize = len(univec(' '))
-  histsize = params["window_size"] * encsize
-  model = Sequential()
-  model.add(LSTM(128, input_shape=(params["window_size"], encsize)))
-  model.add(Activation("relu"))
-  model.add(Dense(encsize))
-  model.add(Activation("relu"))
-  model.add(Dense(encsize))
-  #model.add(Activation("relu"))
-  model.add(Activation("softmax"))
+  winsize = params["window_size"] * encsize
+  input_str = Input(shape=(params["window_size"], encsize));
+  network = input_str
 
-  # TODO: Model specifics
+  # Encoding convolution:
+  for units, width in params["conv_sizes"]:
+    network = Conv1D(units, width, activation='relu', padding='same'))(network)
+    network = MaxPooling1D(pool_size=2, padding='valid'))(network)
 
-  optimizer = RMSprop(lr=0.01)
-  model.compile(loss="categorical_crossentropy", optimizer=optimizer)
-  #model.compile(loss="mean_squared_error", optimizer=optimizer)
+  conv_shape = network._keras_shape[1:]
+  network = Flatten()(network)
+  flat_length = network._keras_shape[-1]
+
+  # Encoding dense layers:
+  for i, sz in enumerate(params["dense_sizes"]):
+    if i == len(params["dense_sizes"])-1:
+      reg = l1(params["regularization"])
+      name = params["encoded_layer_name"]
+    else:
+      reg = None
+      name = "dense_{}".format(i)
+
+    network = Dense(
+      sz,
+      activation='relu',
+      activity_regularizer=reg,
+      name=name
+    )(network)
+
+  # Decoding dense layers:
+  for sz in reversed(params["dense_sizes"])[1:]:
+    network = Dense(sz, activation='relu')(network)
+
+  # size appropriately:
+  network = Dense(flat_length, activation='relu')(network)
+  network = Reshape(conv_shape)(network)
+
+  for units, width in reversed(params["conv_sizes"]):
+    network = UpSampling1D(size=2)(network)
+    network = Conv1D(units, width, activation='relu', padding='same')(x)
+
+  network = Dense(
+    winsize,
+    name=params["decoded_layer_name"]
+  )(network)
+
+  model = Model(input_str, network)
+  model.compile(
+    optimizer='adagrad',
+    loss='mean_squared_error'
+  )
 
   return model
-
-def sample(preds, temperature=1.0):
-  """
-  Helper function to sample a probability distribution. Taken from:
-  https://github.com/fchollet/keras/blob/master/examples/lstm_text_generation.py
-  """
-  preds = np.asarray(preds).astype('float64')
-  preds = np.log(preds) / temperature
-  exp_preds = np.exp(preds)
-  preds = exp_preds / np.sum(exp_preds)
-  probas = np.random.multinomial(1, preds, 1)
-  return np.argmax(probas)
-
 
 def generate(params, model, seed='', n=80):
   """
@@ -263,18 +212,17 @@ def generate(params, model, seed='', n=80):
   specifies the number of additional characters to generate. If no seed is
   given, an STX block is used. The seed must be at least as long as the window
   size, or it will be pre-padded with STX characters.
-
-  The temperature value controls how predictions are selected from the
-  probability distribution returned by the network (see the sample function).
   """
   if len(seed) < params["window_size"]:
     seed = STX * (params["window_size"] - len(seed)) + seed
   result = ''
   vec = vectorize(params, seed, pad=False)
+  sv = vectorize(params, SUB, pad=False)
   for i in range(n):
     iv = vec[-params["window_size"]:]
+    iv = np.append(iv, sv, axis=0)
     pred = model.predict(np.reshape(iv, (1,) + iv.shape), verbose=0)[0]
-    nc = unichr(pred)
+    nc = unichr(pred[-1])
     result += nc
     nv = vectorize(params, nc, pad=False)
     vec = np.append(vec, nv, axis=0)
@@ -308,13 +256,14 @@ def avg_rmse(batch_true, batch_predicted):
     result += sqrt(np.mean(np.power(batch_true[i] - batch_predicted[i], 2)))
   return result / batch_true.shape[0]
 
-def rate_novelty(params, model, cmap, context, fragment):
+def rate_novelty(params, model, context, fragment):
   """
   Takes a context of at least window_size (raw text) as well as a fragment
   (also text) and using the context to spin up the network, predicts each
   character of the fragment in sequence, averaging the categorical crossentropy
   error-per-character to compute a novelty value for the fragment.
   """
+  # TODO:HERE
   vec = vectorize(params, context, pad=False)
   rmap = {v: k for (k, v) in cmap.items()}
   result = 0
