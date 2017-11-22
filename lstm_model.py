@@ -394,15 +394,15 @@ def main(**params):
   print("Creating charmap...")
   cm = charmap(params, ''.join(texts))
 
-  cached = load_model(params, "final")
+  cached = load_model(params, "lstm-final")
   if cached:
     print("Loading trained model...")
     model = cached
     print("...done loading model.")
   else:
     print("Compiling model...")
-    model = load_model(params, "fresh") or build_model(params)
-    save_model(params, model, "fresh")
+    model = load_model(params, "lstm-fresh") or build_model(params)
+    save_model(params, model, "lstm-fresh")
 
     print("Vectorizing data...")
     vectors = []
@@ -439,12 +439,12 @@ def main(**params):
       print()
       print('-'*80)
       print("Epoch {}".format(epoch))
-      cached = load_model(params, "epoch-{}".format(epoch))
+      cached = load_model(params, "lstm-epoch-{}".format(epoch))
       if cached:
         model = cached
       else:
         model.fit(train, target, batch_size=params["batch_size"], epochs=1)
-        save_model(params, model, "epoch-{}".format(epoch))
+        save_model(params, model, "lstm-epoch-{}".format(epoch))
 
       start_from = random.choice(vectors)
       start_index = random.randint(
@@ -468,7 +468,7 @@ def main(**params):
       print("---")
 
     print("...done with training.")
-    save_model(params, model, "final")
+    save_model(params, model, "lstm-final")
 
   print("Separating sentences...")
   sentences = []
@@ -493,7 +493,7 @@ def main(**params):
       si = ei
 
   print("Rating {} sentences...".format(len(sentences)))
-  cached = load_object(params, "rated")
+  cached = load_object(params, "lstm-rated")
   if cached:
     print("  ...loaded saved ratings.")
     rated = cached
@@ -505,7 +505,8 @@ def main(**params):
       utils.prbar(i/len(sentences), interval=5)
       nv = np.mean(rate_novelty(params, model, cm, ctx, st))
       rated.append((nv, ctx, st))
-    save_object(params, rated, "rated")
+    utils.prdone()
+    save_object(params, rated, "lstm-rated")
     print("  ...done rating sentences.")
 
   rated = sorted(rated, key=lambda abc: (abc[0], abc[1], abc[2]))

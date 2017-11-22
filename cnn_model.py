@@ -33,30 +33,34 @@ import numpy as np
 import tensorflow as tf
 
 import keras
-from keras.models import Sequential
-from keras.layers import Dense, Activation, Flatten, Reshape
+from keras.models import Model
+from keras.layers import Input, Dense, Activation, Flatten, Reshape
 from keras.layers import Conv1D, MaxPooling1D, UpSampling1D
 from keras.regularizers import l1
 
 import utils
 
 MAX_UNICHR = 0x10ffff
+PRACTICAL_MAX_UNICHR = 0x2ffff
 
 DEFAULT_PARAMS = {
   "input_directory": "data",
   "window_size": 64,
   "training_window_step": 1,
-  "conv_sizes": [64, 32],
+  "conv_sizes": [(64, 5), (32, 3)],
   "dense_sizes": [512, 256, 128],
   "regularization": 1e-5,
   "encoded_layer_name": "final_encoder",
   "decoded_layer_name": "final_decoder",
   "epochs": 10,
   "batch_size": 128,
+  "superbatch_size": 128,
   "models_dir": "models",
   "objects_dir": "objects",
+  "gen_length": 80*4,
 }
 
+NUL = '\u0000'
 STX = '\u0002'
 ETX = '\u0003'
 SUB = '\u001a'
@@ -83,19 +87,28 @@ def load_data(params):
   print("  ...done loading data.")
   return texts
 
-def onehot(i, n):
-  return [0] * i + [1] + [0] * (n - i - 1)
-
 def univec(c):
   """
   Translates a character into a binary vector starting from the Unicode
-  codepoint and concatenating the one-hot encodings of each base-32 digit.
+  codepoint and concatenating the one-hot encodings of each base-32 digit. Only
+  allows up to 4 base-32 digits, which is enough to cover every codepoint in
+  the basic multilingual plan, the supplementary multilingual plane, and the
+  supplementary ideographic plane. Characters outside this range are replaced
+  by the substitute character.
   """
-  result = []
+  result = np.array([0]*(32*4), dtype=bool)
   o = ord(c)
-  for i in range(5): # 32**5 > 0x10ffff
-    result.extend(onehot(o % 32, 32))
-    o //= 32
+  if o > PRACTICAL_MAX_UNICHR:
+    o = ord(SUB)
+  # unrolled loop x4; 32**5 > 0x10ffff
+  result[32*0 + (o % 32)] = 1
+  o //= 32
+  result[32*1 + (o % 32)] = 1
+  o //= 32
+  result[32*2 + (o % 32)] = 1
+  o //= 32
+  result[32*3 + (o % 32)] = 1
+  o //= 32
   return result
 
 def unichr(v):
@@ -105,7 +118,7 @@ def unichr(v):
   """
   rord = 0
   denom = 1
-  for i in range(5):
+  for i in range(4):
     rord += denom * np.argmax(v[:32])
     v = v[32:]
     denom *= 32
@@ -152,17 +165,26 @@ def build_model(params):
   Builds the Keras model.
   """
   encsize = len(univec(' '))
-  winsize = params["window_size"] * encsize
   input_str = Input(shape=(params["window_size"], encsize));
   network = input_str
 
   # Encoding convolution:
-  for units, width in params["conv_sizes"]:
-    network = Conv1D(units, width, activation='relu', padding='same'))(network)
-    network = MaxPooling1D(pool_size=2, padding='valid'))(network)
+  for i, (units, width) in enumerate(params["conv_sizes"]):
+    network = Conv1D(
+      units,
+      width,
+      activation='relu',
+      padding='same',
+      name = "conv_encoder_{}-{}x{}".format(i, units, width)
+    )(network)
+    network = MaxPooling1D(
+      pool_size=2,
+      padding='valid',
+      name="pool_{}".format(i)
+    )(network)
 
   conv_shape = network._keras_shape[1:]
-  network = Flatten()(network)
+  network = Flatten(name="flatten")(network)
   flat_length = network._keras_shape[-1]
 
   # Encoding dense layers:
@@ -172,7 +194,7 @@ def build_model(params):
       name = params["encoded_layer_name"]
     else:
       reg = None
-      name = "dense_{}".format(i)
+      name = "dense_encoder_{}".format(i)
 
     network = Dense(
       sz,
@@ -182,20 +204,35 @@ def build_model(params):
     )(network)
 
   # Decoding dense layers:
-  for sz in reversed(params["dense_sizes"])[1:]:
-    network = Dense(sz, activation='relu')(network)
+  for i, sz in enumerate(list(reversed(params["dense_sizes"]))[1:]):
+    network = Dense(
+      sz,
+      activation='relu',
+      name="dense_decoder_{}".format(i)
+    )(network)
 
   # size appropriately:
-  network = Dense(flat_length, activation='relu')(network)
-  network = Reshape(conv_shape)(network)
+  network = Dense(flat_length, activation='relu', name="dense_grow")(network)
+  network = Reshape(conv_shape, name="unflatten")(network)
 
-  for units, width in reversed(params["conv_sizes"]):
-    network = UpSampling1D(size=2)(network)
-    network = Conv1D(units, width, activation='relu', padding='same')(x)
+  for i, (units, width) in enumerate(reversed(params["conv_sizes"])):
+    network = UpSampling1D(size=2, name="upsample_{}".format(i))(network)
+    network = Conv1D(
+      units,
+      width,
+      activation='relu',
+      padding='same',
+      name="conv_decoder_{}-{}x{}".format(i, units, width)
+    )(network)
 
+  network = Flatten(name="final_flatten")(network)
   network = Dense(
-    winsize,
+    params["window_size"] * encsize,
     name=params["decoded_layer_name"]
+  )(network)
+  network = Reshape(
+    (params["window_size"], encsize),
+    name="final_reshape"
   )(network)
 
   model = Model(input_str, network)
@@ -217,9 +254,9 @@ def generate(params, model, seed='', n=80):
     seed = STX * (params["window_size"] - len(seed)) + seed
   result = ''
   vec = vectorize(params, seed, pad=False)
-  sv = vectorize(params, SUB, pad=False)
+  sv = vectorize(params, NUL, pad=False)
   for i in range(n):
-    iv = vec[-params["window_size"]:]
+    iv = vec[-(params["window_size"]-1):]
     iv = np.append(iv, sv, axis=0)
     pred = model.predict(np.reshape(iv, (1,) + iv.shape), verbose=0)[0]
     nc = unichr(pred[-1])
@@ -256,27 +293,17 @@ def avg_rmse(batch_true, batch_predicted):
     result += sqrt(np.mean(np.power(batch_true[i] - batch_predicted[i], 2)))
   return result / batch_true.shape[0]
 
-def rate_novelty(params, model, context, fragment):
+def rate_novelty(params, model, fragment):
   """
-  Takes a context of at least window_size (raw text) as well as a fragment
-  (also text) and using the context to spin up the network, predicts each
-  character of the fragment in sequence, averaging the categorical crossentropy
-  error-per-character to compute a novelty value for the fragment.
+  Takes a fragment of window_size raw text and tries to reconstruct it,
+  averaging the categorical crossentropy error-per-character to compute a
+  novelty value for the fragment.
   """
-  # TODO:HERE
-  vec = vectorize(params, context, pad=False)
-  rmap = {v: k for (k, v) in cmap.items()}
+  vec = vectorize(params, fragment, pad=False)
   result = 0
-  ivs = []
-  trues = []
-  for i in range(len(fragment)):
-    iv = vec[-params["window_size"]:]
-    ivs.append(iv)
-    nv = vectorize(params, fragment[i], pad=False)
-    trues.append(nv[0])
-    vec = np.append(vec, nv, axis=0)
+  trues = vec
 
-  preds = np.array(model.predict(np.array(ivs), verbose=0), dtype=np.float64)
+  preds = model.predict(vec, verbose=0)
   trues = np.array(trues, dtype=np.float64)
 
   # TODO: Which of these?
@@ -340,84 +367,105 @@ def main(**params):
 
   texts = load_data(params)
 
-  print("Creating charmap...")
-  cm = charmap(params, ''.join(texts))
+  print("Total characters: {}".format(sum(len(t) for t in texts)))
 
-  cached = load_model(params, "final")
+  cached = load_model(params, "cnn-final")
   if cached:
     print("Loading trained model...")
     model = cached
+    print("Model summary:")
+    print(model.summary())
     print("...done loading model.")
   else:
     print("Compiling model...")
-    model = load_model(params, "fresh") or build_model(params)
-    save_model(params, model, "fresh")
+    model = load_model(params, "cnn-fresh") or build_model(params)
+    save_model(params, model, "cnn-fresh")
 
-    print("Vectorizing data...")
-    vectors = []
-    for t in texts:
-      vectors.append(vectorize(params, t, pad=True))
+    print("Model summary:")
+    print(model.summary())
 
-    print(
-      "Total characters: {}\nVocabulary: {}\n{}".format(
-        sum(len(t) for t in texts),
-        len(cm),
-        ''.join(
-          sorted([k for k in cm])
-        ).replace('\n', r'\n').replace('\r', r'\r')
-      )
-    )
+    print("Exploding training sequences...")
+    cached = load_object(params, "cnn-examples")
+    if cached:
+      examples = cached
+    else:
+      ws = params["window_size"]
+      examples = []
+      for i, t in enumerate(texts):
+        print("[{}/{}]".format(i, len(texts)))
+        for ed in range(ws//2, len(t) + ws//2):
+          utils.prbar((ed - ws//2) / len(t), interval=19)
+          st = ed - ws
+          pre = ''
+          post = ''
+          if st < 0:
+            pre = STX * (-st)
+            st = 0
+          if ed > len(t):
+            post = ETX * (ed - len(t))
+            ed = len(t)
 
-    print("Distilling training sequences...")
-    train = []
-    target = []
-    for tv in vectors:
-      for i in range(
-        params["window_size"] // 2,
-        len(tv) - params["window_size"],
-        params["training_window_step"]
-      ):
-        train.append(tv[i:i + params["window_size"]])
-        target.append(tv[i+params["window_size"]])
+          ex = pre + t[st:ed] + post
+          examples.append(ex)
 
-    train = np.array(train, dtype=np.bool)
-    target = np.array(target, dtype=np.bool)
+        utils.prdone()
+
+      save_object(params, examples, "cnn-examples")
 
     print("Training model...")
     for epoch in range(1, params["epochs"]+1):
       print()
       print('-'*80)
       print("Epoch {}".format(epoch))
-      cached = load_model(params, "epoch-{}".format(epoch))
+      cached = load_model(params, "cnn-epoch-{}".format(epoch))
       if cached:
         model = cached
       else:
-        model.fit(train, target, batch_size=params["batch_size"], epochs=1)
-        save_model(params, model, "epoch-{}".format(epoch))
+        sbs = params["superbatch_size"] * params["batch_size"]
+        for bs in range(0, len(examples), sbs):
+          utils.prbar(bs / len(examples), interval=1)
+          batch = examples[bs:bs + sbs]
+          bvec = np.array(
+            [
+              vectorize(params, ex, pad=False)
+                for ex in batch
+            ],
+            dtype=np.bool
+          )
+          model.fit(bvec, bvec, batch_size=len(bvec), epochs=1, verbose=0)
+          # TODO: Does this work?!?
+          del batch
+          del bvec
+        utils.prdone()
+        save_model(params, model, "cnn-epoch-{}".format(epoch))
 
-      start_from = random.choice(vectors)
-      start_index = random.randint(
-        params["window_size"]//2,
-        len(start_from) - params["window_size"]*2
-      )
+      print("...done with training.")
+      save_model(params, model, "cnn-final")
 
-      # TODO: Not this?
-      seed = start_from[start_index:start_index + params["window_size"]]
-      generated = de_vectorize(params, seed)
-      print("--- generating...".format(generated))
-      pre = generated;
-      gen = generate(
-        params,
-        model,
-        seed=generated,
-        n=80*4
-      )
-      gen = utils.reflow(pre + "|" + gen)
-      print(gen)
-      print("---")
 
-    print("...done with training.")
-    save_model(params, model, "final")
+  cached = load_object(params, "cnn-generated")
+  if cached:
+    pre, gen = cached
+    print("Generated:\n{}|{}".format(pre, gen))
+  else:
+    start_from = random.choice(texts)
+    start_index = random.randint(
+      params["window_size"]//2,
+      len(start_from) - params["gen_length"]
+    )
+    seed = start_from[start_index:start_index + params["window_size"]]
+    print("Generating text:")
+    pre = seed;
+    gen = generate(
+      params,
+      model,
+      seed=seed,
+      n=params["gen_length"]
+    )
+    pre = utils.reflow(pre)
+    gen = utils.reflow(gen)
+    print("{}|{}".format(pre, gen))
+    save_object(params, (pre, gen), "cnn-generated")
 
   print("Separating sentences...")
   sentences = []
@@ -427,54 +475,63 @@ def main(**params):
     done = False
     while not done:
       try:
-        ei = t.index('.', si+1)
+        ei = t.index('.', si) + 1
       except ValueError:
         ei = len(t)
         done = True
       if si == 0:
         sentences.append((STX*params["window_size"], t[si:ei]))
       elif si < params["window_size"]:
+        if t[si] in ' \n':
+          si += 1
         pre = t[:si]
         pre = STX * (params["window_size"] - len(pre)) + pre
         sentences.append((pre, t[si:ei]))
       else:
+        if t[si] in ' \n':
+          si += 1
         sentences.append((t[si-params["window_size"]:si], t[si:ei]))
       si = ei
 
   print("Rating {} sentences...".format(len(sentences)))
-  cached = load_object(params, "rated")
+  cached = load_object(params, "cnn-rated")
   if cached:
     print("  ...loaded saved ratings.")
     rated = cached
   else:
+    ws = params["window_size"]
     rated = []
     for i, (ctx, st) in enumerate(sentences):
       if len(st) == 0:
         continue
-      utils.prbar(i/len(sentences), interval=5)
-      nv = np.mean(rate_novelty(params, model, cm, ctx, st))
-      rated.append((nv, ctx, st))
-    save_object(params, rated, "rated")
+      utils.prbar(i/len(sentences), interval=6)
+      chunks = []
+      needed = ws - len(st)
+      while needed < 0:
+        chunks.append(st[-ws:])
+        st = st[:-ws]
+        needed = ws - len(st)
+      chunks.append(ctx[-needed:] + st)
+      nv = np.mean([rate_novelty(params, model, c) for c in chunks])
+      rated.append((nv, chunks))
+    utils.prdone()
+    save_object(params, rated, "cnn-rated")
     print("  ...done rating sentences.")
 
-  rated = sorted(rated, key=lambda abc: (abc[0], abc[1], abc[2]))
+  rated = sorted(rated, key=lambda ab: (ab[0], ab[1]))
   boring = rated[:5]
   interesting = rated[-5:]
 
   print("---")
   print("Least-novel:")
-  for r, ctx, st in boring:
-    st = utils.reflow(st)
-    if st.startswith(". "):
-      st = st[2:] + "."
+  for r, chunks in boring:
+    st = utils.reflow(''.join(chunks))
     print("{:.3g}: {}".format(r, st))
 
   print("---")
   print("Most-novel:")
-  for r, ctx, st in interesting:
-    st = utils.reflow(st)
-    if st.startswith(". "):
-      st = st[2:] + "."
+  for r, chunks in interesting:
+    st = utils.reflow(''.join(chunks))
     print("{:.3g}: '{}'".format(r, st))
 
 if __name__ == "__main__":
