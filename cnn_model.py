@@ -45,9 +45,9 @@ PRACTICAL_MAX_UNICHR = 0x2ffff
 
 DEFAULT_PARAMS = {
   "input_directory": "data",
-  "window_size": 64,
+  "window_size": 32,
   "training_window_step": 1,
-  "conv_sizes": [(64, 5), (32, 3)],
+  "conv_sizes": [(48, 4), (32, 3)],
   "dense_sizes": [512, 256, 128],
   "regularization": 1e-5,
   "encoded_layer_name": "final_encoder",
@@ -174,7 +174,7 @@ def build_model(params):
       units,
       width,
       activation='relu',
-      padding='same',
+      padding='valid',
       name = "conv_encoder_{}-{}x{}".format(i, units, width)
     )(network)
     network = MaxPooling1D(
@@ -221,14 +221,15 @@ def build_model(params):
       units,
       width,
       activation='relu',
-      padding='same',
+      padding='valid',
       name="conv_decoder_{}-{}x{}".format(i, units, width)
     )(network)
 
   network = Flatten(name="final_flatten")(network)
   network = Dense(
     params["window_size"] * encsize,
-    name=params["decoded_layer_name"]
+    activation='relu',
+    name=params["decoded_layer_name"],
   )(network)
   network = Reshape(
     (params["window_size"], encsize),
@@ -273,6 +274,9 @@ def cat_crossent(true, pred):
   """
   # Note the corrective factor here to avoid division by zero in log:
   return -np.dot(true, np.log(pred + 1e-12))
+  # TODO: Not this!
+  #baseline = np.min(pred)
+  #return -np.dot(true, np.log(pred - baseline + 1e-12))
 
 def avg_cat_crossent(batch_true, batch_predicted):
   """
@@ -290,7 +294,7 @@ def avg_rmse(batch_true, batch_predicted):
   """
   result = 0
   for i in range(batch_true.shape[0]):
-    result += sqrt(np.mean(np.power(batch_true[i] - batch_predicted[i], 2)))
+    result += np.sqrt(np.mean(np.power(batch_true[i] - batch_predicted[i], 2)))
   return result / batch_true.shape[0]
 
 def rate_novelty(params, model, fragment):
@@ -303,7 +307,7 @@ def rate_novelty(params, model, fragment):
   result = 0
   trues = vec
 
-  preds = model.predict(vec, verbose=0)
+  preds = model.predict(np.reshape(vec, (1,) + vec.shape), verbose=0)[0]
   trues = np.array(trues, dtype=np.float64)
 
   # TODO: Which of these?
@@ -472,13 +476,11 @@ def main(**params):
   for t in texts:
     si = 0
     ei = 0
-    done = False
-    while not done:
+    while si < len(t):
       try:
         ei = t.index('.', si) + 1
       except ValueError:
         ei = len(t)
-        done = True
       if si == 0:
         sentences.append((STX*params["window_size"], t[si:ei]))
       elif si < params["window_size"]:
@@ -506,12 +508,12 @@ def main(**params):
         continue
       utils.prbar(i/len(sentences), interval=6)
       chunks = []
-      needed = ws - len(st)
-      while needed < 0:
-        chunks.append(st[-ws:])
-        st = st[:-ws]
-        needed = ws - len(st)
-      chunks.append(ctx[-needed:] + st)
+      if len(st) < ws:
+        chunks = [ ctx[len(st) - ws:] + st ]
+      else:
+        chunks = [
+          st[i:i+ws] for i in range(len(st) - ws + 1)
+        ]
       nv = np.mean([rate_novelty(params, model, c) for c in chunks])
       rated.append((nv, chunks))
     utils.prdone()

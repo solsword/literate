@@ -72,7 +72,7 @@ def ftime(seconds):
   else:
     return "{:.2g}s".format(seconds)
 
-PR_N_EST = 4
+PR_N_EST = 8
 PR_START = None
 PR_INTRINSIC = 0
 PR_ESTIMATES = [0]*PR_N_EST
