@@ -267,6 +267,28 @@ def generate(params, model, seed='', n=80):
 
   return result
 
+def itergen(params, model, limit=100):
+  """
+  Iteratively generates text by starting with random characters and
+  autoencoding until convergence (or until the iteration limit is hit).
+  """
+  seed = ''.join(
+    random.choice("abcdefghijklmnopqrstuvwxyz., \n")
+      for x in range(params["window_size"])
+  )
+  print("SEED:", seed)
+  last = seed
+  vec = vectorize(params, seed, pad=False)
+  for i in range(limit):
+    pred = model.predict(np.reshape(vec, (1,) + vec.shape), verbose=0)[0]
+    result = de_vectorize(params, pred)
+    print("R", result)
+    if result == last:
+      break
+    last = result
+    vec = vectorize(params, result, pad=False)
+  return result
+
 def cat_crossent(true, pred):
   """
   Returns the categorical crossentropy between a true distribution and a
@@ -449,27 +471,19 @@ def main(**params):
 
   cached = load_object(params, "cnn-generated")
   if cached:
-    pre, gen = cached
-    print("Generated:\n{}|{}".format(pre, gen))
+    gen = cached
+    print("Loading generated text...")
   else:
-    start_from = random.choice(texts)
-    start_index = random.randint(
-      params["window_size"]//2,
-      len(start_from) - params["gen_length"]
-    )
-    seed = start_from[start_index:start_index + params["window_size"]]
-    print("Generating text:")
-    pre = seed;
-    gen = generate(
-      params,
-      model,
-      seed=seed,
-      n=params["gen_length"]
-    )
-    pre = utils.reflow(pre)
-    gen = utils.reflow(gen)
-    print("{}|{}".format(pre, gen))
-    save_object(params, (pre, gen), "cnn-generated")
+    print("Generating text...")
+    gen = []
+    for i in range(10):
+      gen.append(utils.reflow(itergen(params, model)))
+      utils.prbar(i/10)
+    utils.prdone()
+    save_object(params, gen, "cnn-generated")
+  print("  ...results:")
+  for g in gen:
+    print(" ", g)
 
   print("Separating sentences...")
   sentences = []
@@ -510,12 +524,14 @@ def main(**params):
       chunks = []
       if len(st) < ws:
         chunks = [ ctx[len(st) - ws:] + st ]
+        used = ctx[len(st) - ws:] + st
       else:
         chunks = [
           st[i:i+ws] for i in range(len(st) - ws + 1)
         ]
+        used = st
       nv = np.mean([rate_novelty(params, model, c) for c in chunks])
-      rated.append((nv, chunks))
+      rated.append((nv, used))
     utils.prdone()
     save_object(params, rated, "cnn-rated")
     print("  ...done rating sentences.")
