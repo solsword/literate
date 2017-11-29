@@ -160,7 +160,6 @@ def train_one_epoch(epoch, params, examples, model):
       dtype=np.bool
     )
     model.fit(bvec, bvec, batch_size=params["batch_size"], epochs=1, verbose=0)
-    # TODO: Does this work?!?
     del batch
     del bvec
   utils.prdone()

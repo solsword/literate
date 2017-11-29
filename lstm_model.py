@@ -28,6 +28,10 @@ import vectorize
 STX = '\u0002'
 ETX = '\u0003'
 
+@dep.task(("lstm-model-fresh",), "lstm-model-summary")
+def summarize_model(model):
+  return model.summary()
+
 @dep.task(("params",), "lstm-model-fresh")
 def build_model(params):
   """
@@ -102,7 +106,7 @@ def train_one_epoch(epoch, params, examples, model):
     )
     bevec = np.array( # batch expected vector
       [
-        vectorize.vectorize(params, ex[1], pad=False)
+        vectorize.vectorize(params, ex[1], pad=False)[0]
           for ex in batch
       ],
       dtype=np.bool
@@ -114,9 +118,9 @@ def train_one_epoch(epoch, params, examples, model):
       epochs=1,
       verbose=0
     )
-    # TODO: Does this work?!?
     del batch
-    del bvec
+    del bivec
+    del bevec
   utils.prdone()
   print("...done with epoch {}.".format(epoch))
   return model

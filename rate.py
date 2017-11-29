@@ -7,6 +7,8 @@ Code for computing ratings from a model.
 import numpy as np
 
 import dep
+import utils
+import vectorize
 
 def cat_crossent(true, pred):
   """
@@ -42,14 +44,14 @@ def rate_lstm_novelty(params, model, context, fragment):
   character of the fragment in sequence, averaging the categorical crossentropy
   error-per-character to compute a novelty value for the fragment.
   """
-  vec = vectorize(params, context, pad=False)
+  vec = vectorize.vectorize(params, context, pad=False)
   result = 0
   ivs = []
   trues = []
   for i in range(len(fragment)):
     iv = vec[-params["window_size"]:]
     ivs.append(iv)
-    nv = vectorize(params, fragment[i], pad=False)
+    nv = vectorize.vectorize(params, fragment[i], pad=False)
     trues.append(nv[0])
     vec = np.append(vec, nv, axis=0)
 
@@ -66,7 +68,7 @@ def rate_cnn_novelty(params, model, fragment):
   averaging the categorical crossentropy error-per-character to compute a
   novelty value for the fragment.
   """
-  vec = vectorize(params, fragment, pad=False)
+  vec = vectorize.vectorize(params, fragment, pad=False)
   result = 0
   trues = vec
 
@@ -91,7 +93,7 @@ def lstm_rate_all(params, model, sentences):
   utils.prdone()
   print("  ...done rating sentences.")
 
-  rated = sorted(rated, key=lambda abc: (abc[0], abc[1], abc[2]))
+  rated = sorted(rated)
   return rated
 
 @dep.task(("params", "cnn-model-final", "sentences"), "cnn-rated")
@@ -123,14 +125,16 @@ def cnn_rate_all(params, model, sentences):
   utils.prdone()
   print("  ...done rating sentences.")
 
-  rated = sorted(rated, key=lambda abc: (abc[0], abc[1], abc[2]))
+  rated = sorted(rated)
   return rated
 
-@dep.template_task(("{word}-rated"), "{word}-extremes")
+@dep.template_task(("{word}-rated",), "{word}-extremes")
 def show_extremes(match, rated):
   """
   Shows the top-5 and bottom-5 rated sentences from a rated list.
   """
+  result = ""
+
   boring = rated[:5]
   interesting = rated[-5:]
 
@@ -139,8 +143,10 @@ def show_extremes(match, rated):
     st = utils.reflow(st)
     result += "{:.3g}: {}\n".format(r, st)
 
-  print("---")
-  print("Most-novel:")
+  result += "---\n"
+  result += "Most-novel:\n"
   for r, st in interesting:
     st = utils.reflow(st)
-    print("{:.3g}: '{}'".format(r, st))
+    result += "{:.3g}: '{}'\n".format(r, st)
+
+  return result

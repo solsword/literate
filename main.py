@@ -68,7 +68,7 @@ def main(*targets):
     d1 = '-' * (max(0, 80 - 2 - len(t))//2)
     d2 = '-' * (80 - 2 - len(t) - len(d1))
     print("{} {} {}".format(d1, t, d2))
-    print(dep.create(t))
+    print(dep.create(t)[1])
 
 
 if __name__ == "__main__":

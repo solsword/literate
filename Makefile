@@ -23,3 +23,6 @@ lstm: main.py lstm_model.py
 .PHONY: cnn
 cnn: main.py cnn_model.py
 	optirun ./main.py cnn-rated
+
+%: main.py
+	optirun ./main.py $@

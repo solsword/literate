@@ -69,6 +69,12 @@ def task(inputs, output, flags=()):
   A decorator for defining a task. Registers the decorated function as the
   mechanism for producing the declared target using the given inputs.
   """
+  if not isinstance(inputs, (list, tuple)):
+    raise ValueError(
+      "task inputs must be a list or tuple. Did you forget a comma?"
+    )
+  if not isinstance(output, str):
+    raise ValueError("task output must be a string.")
   def decorate(function):
     global KNOWN_TARGETS
     KNOWN_TARGETS[output] = (inputs, function, flags)
@@ -80,6 +86,12 @@ def template_task(inputs, output, flags=()):
   A decorator similar to task, but it generates targets by replacing named
   formatting groups within input/output strings with appropriate matches.
   """
+  if not isinstance(inputs, (list, tuple)):
+    raise ValueError(
+      "template_task inputs must be a list or tuple. Did you forget a comma?"
+    )
+  if not isinstance(output, str):
+    raise ValueError("template_task output must be a string.")
   def decorate(function):
     global TARGET_GENERATORS
 
@@ -128,6 +140,12 @@ def iter_task(inputs, output, flags=()):
   A decorator similar to task, but it generates targets by replacing {iter} and
   {next} within input/output strings with subsequent natural numbers.
   """
+  if not isinstance(inputs, (list, tuple)):
+    raise ValueError(
+      "iter_task inputs must be a list or tuple. Did you forget a comma?"
+    )
+  if not isinstance(output, str):
+    raise ValueError("iter_task output must be a string.")
   def decorate(function):
     global TARGET_GENERATORS
 
