@@ -27,6 +27,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import dep
 import sys
+import copy
 
 # target-defining modules:
 import load
@@ -45,8 +46,8 @@ DEFAULT_PARAMS = {
   "generate_size": 80,
   "window_size": 32,
   "training_window_step": 1,
-  "conv_sizes": [(48, 4), (32, 3)],
-  "dense_sizes": [512, 256, 128],
+  "conv_sizes": ((48, 4), (32, 3)),
+  "dense_sizes": (512, 256, 128),
   "regularization": 1e-5,
   "encoded_layer_name": "final_encoder",
   "decoded_layer_name": "final_decoder",
@@ -58,8 +59,6 @@ DEFAULT_PARAMS = {
   "gen_length": 80*4,
   "n_extremes": 100,
 }
-
-dep.add_object(DEFAULT_PARAMS, "params")
 
 #dep.add_alias("default", "lstm-rated")
 
@@ -80,4 +79,22 @@ def main(*targets):
 
 
 if __name__ == "__main__":
-  main(*sys.argv[1:])
+  args = sys.argv[1:]
+  targets = []
+  params = copy.deepcopy(DEFAULT_PARAMS)
+  for a in args:
+    if a.startswith("--"):
+      spl = a.index('=')
+      key = a[2:spl]
+      val = a[spl+1:]
+      if key in params:
+        if type(params[key]) == str:
+          params[key] = val
+        else:
+          params[key] = eval(val)
+        continue # not a target
+    targets.append(a)
+
+  dep.add_object(params, "params")
+
+  main(*targets)
