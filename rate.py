@@ -10,6 +10,9 @@ import dep
 import utils
 import vectorize
 
+STX = '\u0002'
+ETX = '\u0003'
+
 def cat_crossent(true, pred):
   """
   Returns the categorical crossentropy between a true distribution and a
@@ -96,6 +99,20 @@ def lstm_rate_all(params, model, sentences):
   rated = sorted(rated)
   return rated
 
+@dep.task(
+  ("params", "lstm-model-streaming-final", "input-stream"),
+  "lstm-rated-stream",
+  ("ephemeral",)
+)
+def lstm_stream_ratings(params, model, stream):
+  ws = params["window_size"]
+  def generate():
+    for line in stream:
+      nv = rate_lstm_novelty(params, model, STX * ws, line)
+      yield (nv, line)
+
+  return generate()
+
 @dep.task(("params", "cnn-model-final", "sentences"), "cnn-rated")
 def cnn_rate_all(params, model, sentences):
   """
@@ -146,6 +163,59 @@ def show_extremes(match, rated):
   result += "---\n"
   result += "Most-novel:\n"
   for r, st in interesting:
+    st = utils.reflow(st)
+    result += "{:.3g}: '{}'\n".format(r, st)
+
+  return result
+
+@dep.task(
+  ("params", "lstm-rated-stream", "stream-epoch-count-estimate"),
+  "lstm-streaming-extremes"
+)
+def stream_extremes(params, rated_stream, count_estimate):
+  n = params["n_extremes"]
+  top = []
+  bot = []
+  print("Finding extreme-rated examples...")
+  for prog in range(count_estimate):
+    utils.prbar(prog / count_estimate)
+    rating, line = next(rated_stream)
+    for i in range(n):
+      if len(top) <= i:
+        top.append((rating, line))
+        break
+      elif rating == top[i][0] and line == top[i][1]:
+        break # duplicate
+      elif rating > top[i][0]:
+        top.insert(i, (rating, line))
+        break
+    if len(top) > n:
+      top = top[:n]
+
+    for i in range(n):
+      if len(bot) <= i:
+        bot.append((rating, line))
+        break
+      elif rating == bot[i][0] and line == bot[i][1]:
+        break # duplicate
+      elif rating < bot[i][0]:
+        bot.insert(i, (rating, line))
+        break
+    bot = bot[:n]
+
+  utils.prdone()
+  print("  ...done finding extremes.")
+
+  result = ""
+
+  result += "Least-novel:\n"
+  for r, st in bot:
+    st = utils.reflow(st)
+    result += "{:.3g}: {}\n".format(r, st)
+
+  result += "---\n"
+  result += "Most-novel:\n"
+  for r, st in top:
     st = utils.reflow(st)
     result += "{:.3g}: '{}'\n".format(r, st)
 

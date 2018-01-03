@@ -37,6 +37,11 @@ import rate
 
 DEFAULT_PARAMS = {
   "input_directory": "data",
+  "default_streaming_epoch_count": 100000,
+  "stream_line_length_guess": 320,
+  "streaming_source": "data/chat/test.txt",
+  "stream_chunk_size": 1024*1024*256, # up to 256 MB in memory at once
+  "stream_sleep": 1/1000000, # one microsecond
   "generate_size": 80,
   "window_size": 32,
   "training_window_step": 1,
@@ -51,18 +56,21 @@ DEFAULT_PARAMS = {
   "models_dir": "models",
   "objects_dir": "objects",
   "gen_length": 80*4,
+  "n_extremes": 100,
 }
 
 dep.add_object(DEFAULT_PARAMS, "params")
 
-dep.add_alias("default", "lstm-rated")
+#dep.add_alias("default", "lstm-rated")
+
+dep.add_alias("default", "lstm-streaming-extremes")
 
 def main(*targets):
   """
   Main program. Builds the desired targets.
   """
   if not targets:
-    targets = ["defualt"]
+    targets = ["default"]
 
   for t in targets:
     d1 = '-' * (max(0, 80 - 2 - len(t))//2)

@@ -47,12 +47,16 @@ def add_alias(alias, target):
 
 def add_object(obj, target, flags=()):
   """
-  Adds a task that simply returns the given object.
+  Adds a task that simply returns the given object. As a precaution, when
+  add_object is called the target object is immediately (re-)cached, so that
+  any old objects cached under the same target will be overwritten. If you want
+  to avoid this behavior, don't call add_object repeatedly.
   """
   global KNOWN_TARGETS
   def offer():
     nonlocal obj
     return obj
+  cache_value(target, obj, flags)
   KNOWN_TARGETS[target] = ((), offer, flags)
 
 def add_gather(inputs, output, flags=()):
@@ -220,17 +224,24 @@ def get_cached(target):
 def cache_value(target, value, flags):
   """
   Adds a value to the cache, also storing it to disk. Returns the timestamp of
-  the newly-cached value.
+  the newly-cached value. Flags affect caching as follows:
+
+    "ephemeral": Don't cache on disk (only in memory).
+    "volatile": Don't cache in memory (only on disk).
+
+  Combining "ephemeral" and "volatile" will not work (in that case, just use a
+  normal function to return the value, rather than a dependency).
   """
-  cache.save_any(CACHE_DIR, value, target)
+  if "ephemeral" not in flags: # Else don't save on disk
+    cache.save_any(CACHE_DIR, value, target)
   ts = time.time()
-  if "volatile" in flags: # Only save to disk
+  if "volatile" not in flags: # Else don't save in memory
+    CACHED_VALUES[target] = (ts, value)
+  else:
     try:
       del CACHED_VALUES[target]
     except:
       pass
-  else:
-    CACHED_VALUES[target] = (ts, value)
   return ts
 
 def find_target(target):
