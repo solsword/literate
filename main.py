@@ -39,6 +39,7 @@ import rate
 DEFAULT_PARAMS = {
   "input_directory": "data",
   "default_streaming_epoch_count": 100000,
+  "exact_streaming_epoch_count": None,
   "stream_line_length_guess": 320,
   "streaming_source": "data/chat/test.txt",
   "stream_chunk_size": 1024*1024*256, # up to 256 MB in memory at once

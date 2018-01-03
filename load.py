@@ -81,11 +81,18 @@ def estimate_stream_epoch_count(params):
   place).
   """
   src = params["streaming_source"]
-  try:
+
+  # Override estimate:
+  if params["exact_streaming_epoch_count"]:
+    return params["exact_streaming_epoch_count"]
+
+  try: # try to get file size:
     st = os.stat(src)
     sz = st.st_size
+    if sz <= 0:
+      return params["default_streaming_epoch_count"]
     return sz - int(sz / params["stream_line_length_guess"])
-  except:
+  except: # otherwise use default estimate:
     return params["default_streaming_epoch_count"]
 
 @dep.task(("params",), "input-stream", ("ephemeral",))
