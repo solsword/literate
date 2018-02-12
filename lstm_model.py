@@ -19,10 +19,10 @@ from keras.optimizers import RMSprop
 #from keras.callbacks import ModelCheckpoint
 #from keras.utils import np_utils
 
-import utils
-import dep
+from . import utils
+from . import dep
 
-import vectorize
+from . import vectorize
 
 STX = '\u0002'
 ETX = '\u0003'
@@ -175,10 +175,12 @@ def train_one_epoch_streaming(
   print('-'*80)
   print("Epoch {}".format(epoch))
   sbs = params["superbatch_size"] * params["batch_size"]
+  processed = 0
   for bs in range(0, count_estimate, sbs):
     utils.prbar(bs / count_estimate, interval=1)
     batch = []
     for i in range(bs, min(count_estimate, bs + sbs)):
+      processed += 1
       batch.append(next(example_stream))
     bivec = np.array( # batch input vector
       [
@@ -205,7 +207,12 @@ def train_one_epoch_streaming(
     del bivec
     del bevec
   utils.prdone()
-  print("...done with epoch {}.".format(epoch))
+  print(
+    "...done with epoch {} ({} examples processed).".format(
+      epoch,
+      processed
+    )
+  )
   return model
 
 dep.add_alias("lstm-model-streaming-epoch-start", "lstm-model-fresh")

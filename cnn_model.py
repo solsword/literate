@@ -15,10 +15,10 @@ from keras.layers import Input, Dense, Activation, Flatten, Reshape
 from keras.layers import Conv1D, MaxPooling1D, UpSampling1D
 from keras.regularizers import l1
 
-import utils
-import dep
+from . import utils
+from . import dep
 
-import vectorize
+from . import vectorize
 
 @dep.task(("cnn-model-fresh",), "cnn-model-summary")
 def summarize_model(model):

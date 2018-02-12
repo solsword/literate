@@ -25,16 +25,17 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-import dep
+from . import dep
+
 import sys
 import copy
 
 # target-defining modules:
-import load
-import lstm_model
-import cnn_model
-import generate
-import rate
+from . import load
+from . import lstm_model
+from . import cnn_model
+from . import generate
+from . import rate
 
 DEFAULT_PARAMS = {
   "input_directory": "data",

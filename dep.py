@@ -1,14 +1,21 @@
 """
 dep.py
 
-Python make-like object building/caching system.
+Python make-like object building/caching system. Example usage:
+
+
+  @dep.task(("dependency-name-1", "dependency-name-2"), "product-name")
+  def function_that_produces_product(dep1, dep2):
+    ...
+    return product
 """
 
 import os
-import cache
 import time
 import regex as re # for same-name group overwriting
 import collections
+
+from . import cache
 
 TARGET_ALIASES = {}
 KNOWN_TARGETS = {}

@@ -6,9 +6,9 @@ Code for computing ratings from a model.
 
 import numpy as np
 
-import dep
-import utils
-import vectorize
+from . import dep
+from . import utils
+from . import vectorize
 
 STX = '\u0002'
 ETX = '\u0003'

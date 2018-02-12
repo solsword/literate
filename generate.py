@@ -8,7 +8,7 @@ NUL = '\u0000'
 STX = '\u0002'
 ETX = '\u0003'
 
-import dep
+from . import dep
 
 @dep.iter_task(("params", "texts"), "seed-{iter}")
 def get_seed(iteration, params, texts):

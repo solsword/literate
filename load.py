@@ -7,8 +7,8 @@ Data loading and basic processing.
 import os
 import time
 
-import utils
-import dep
+from . import utils
+from . import dep
 
 STX = '\u0002'
 ETX = '\u0003'
@@ -84,16 +84,24 @@ def estimate_stream_epoch_count(params):
 
   # Override estimate:
   if params["exact_streaming_epoch_count"]:
-    return params["exact_streaming_epoch_count"]
+    ec = params["exact_streaming_epoch_count"]
+    print("Using exact epoch count: {}".format(ec))
+    return ec
 
   try: # try to get file size:
     st = os.stat(src)
     sz = st.st_size
     if sz <= 0:
-      return params["default_streaming_epoch_count"]
-    return sz - int(sz / params["stream_line_length_guess"])
+      ec = params["default_streaming_epoch_count"]
+      print("Using default epoch count: {}".format(ec))
+      return ec
+    ec = sz - int(sz / params["stream_line_length_guess"])
+    print("Using computed epoch count: {}".format(ec))
+    return ec
   except: # otherwise use default estimate:
-    return params["default_streaming_epoch_count"]
+    ec = params["default_streaming_epoch_count"]
+    print("Using default epoch count: {}".format(ec))
+    return ec
 
 @dep.task(("params",), "input-stream", ("ephemeral",))
 def stream_lines(params):
